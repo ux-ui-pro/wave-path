@@ -28,7 +28,7 @@ function clamp(n: number, min: number, max: number): number {
 }
 
 function clamp01(n: number): number {
-  return n < 0 ? 0 : n > 1 ? 1 : n;
+  return n <= 0 ? 0 : n >= 1 ? 1 : n;
 }
 
 function lerp(a: number, b: number, t: number): number {
@@ -70,9 +70,6 @@ function normalizeOptions(opts: WavePathOptions): NormalizedOptions {
 }
 
 export default class WavePath {
-  private static readonly SKIP_DELTA_P = 0.0015;
-  private static readonly EDGE_EPS_P = 0.0005;
-
   private static readonly ENV_POWER = 0.5;
   private static readonly RIPPLE_FREQ = 2;
   private static readonly RIPPLE_GAIN = 0.5;
@@ -100,7 +97,6 @@ export default class WavePath {
   private readonly ptsStr: string[] = [];
 
   private yWork: Float32Array[] = [];
-  private lastLocalP: Float32Array = new Float32Array(0);
   private prevD: string[] = [];
 
   private sharedPhase = 0;
@@ -123,7 +119,7 @@ export default class WavePath {
 
     this._isOpened = o.isOpened;
 
-    this.flatTopY = new Float32Array(this.numberPoints); // всегда 0
+    this.flatTopY = new Float32Array(this.numberPoints);
 
     this.precomputeX();
     this.precomputePointParams();
@@ -142,7 +138,6 @@ export default class WavePath {
     if (!this.svg) {
       this.resetDomRefs();
       this.killTimeline();
-
       return;
     }
 
@@ -153,38 +148,30 @@ export default class WavePath {
 
     if (this.pathCount === 0) {
       this.resetDomRefs();
-
       return;
     }
 
     this.allocateCaches();
 
     const stableD = this.buildDCubic(this.flatTopY, this._isOpened);
-
     for (let i = 0; i < this.pathCount; i++) this.setPathD(i, stableD);
   }
 
   public async open(): Promise<void> {
     if (this.isAnimating()) return;
-
     this._isOpened = true;
-
     await this.playProgress(true);
   }
 
   public async close(): Promise<void> {
     if (this.isAnimating()) return;
-
     this._isOpened = false;
-
     await this.playProgress(false);
   }
 
   public async toggle(): Promise<void> {
     if (this.isAnimating()) return;
-
     this._isOpened = !this._isOpened;
-
     await this.playProgress(this._isOpened);
   }
 
@@ -215,31 +202,26 @@ export default class WavePath {
 
   private resetCaches(): void {
     this.yWork = [];
-    this.lastLocalP = new Float32Array(0);
   }
 
   private allocateCaches(): void {
     this.yWork = new Array(this.pathCount);
-    this.lastLocalP = new Float32Array(this.pathCount);
     this.prevD = new Array(this.pathCount);
 
     for (let i = 0; i < this.pathCount; i++) {
       this.yWork[i] = new Float32Array(this.numberPoints);
-      this.lastLocalP[i] = -1;
       this.prevD[i] = this.paths[i].getAttribute('d') ?? '';
     }
   }
 
   private setPathD(i: number, d: string): void {
     if (this.prevD[i] === d) return;
-
     this.paths[i].setAttribute('d', d);
     this.prevD[i] = d;
   }
 
   private killTimeline(): void {
     if (!this.tl) return;
-
     this.tl.eventCallback('onComplete', null);
     this.tl.kill();
     this.tl = null;
@@ -283,15 +265,23 @@ export default class WavePath {
 
   private static fmt(n: number): string {
     const v = Math.round(n * 100) / 100;
-
     return Number.isInteger(v) ? String(v | 0) : String(v);
   }
 
   private static fmtY(n: number): string {
     const v = Math.round(n * 10) / 10;
     const iv = v | 0;
-
     return v === iv ? String(iv) : String(v);
+  }
+
+  private static motionProfile(p: number): { pos: number; bell: number } {
+    const t = clamp01(p);
+
+    const pos = t * t * t * (t * (t * 6 - 15) + 10);
+
+    const bell = Math.sin(Math.PI * pos);
+
+    return { pos, bell };
   }
 
   private rollNewSharedWaveProfile(): void {
@@ -307,20 +297,15 @@ export default class WavePath {
   }
 
   private fillWaveYAtProgress(out: Float32Array, p: number): void {
-    let pp = clamp01(p);
+    const pp = p <= 0 ? 0 : p >= 1 ? 1 : p;
 
-    if (pp < WavePath.EDGE_EPS_P) pp = 0;
-    else if (pp > 1 - WavePath.EDGE_EPS_P) pp = 1;
+    const { pos, bell } = WavePath.motionProfile(pp);
 
-    const lift = lerp(PERCENT_MAX, PERCENT_MIN, pp);
-    const waveK = Math.sin(Math.PI * pp);
+    const lift = lerp(PERCENT_MAX, PERCENT_MIN, pos);
+    const rippleFactor = this.amplitude * WavePath.RIPPLE_GAIN * bell;
 
-    const rippleFactor = this.amplitude * WavePath.RIPPLE_GAIN * waveK;
-    const n = this.numberPoints;
-
-    for (let i = 0; i < n; i++) {
+    for (let i = 0; i < this.numberPoints; i++) {
       const y = lift + this.baseSinEnvArr[i] * rippleFactor;
-
       out[i] = clamp(y, PERCENT_MIN, PERCENT_MAX);
     }
   }
@@ -329,7 +314,6 @@ export default class WavePath {
     const { cpStr, pStr, segCount, dBuf, ptsStr } = this;
 
     ptsStr.length = this.numberPoints;
-
     for (let j = 0; j < this.numberPoints; j++) {
       ptsStr[j] = WavePath.fmtY(y[j]);
     }
@@ -362,10 +346,7 @@ export default class WavePath {
     if (!this.svg || this.pathCount === 0) return;
 
     this.killTimeline();
-
     this.rollNewSharedWaveProfile();
-
-    for (let i = 0; i < this.pathCount; i++) this.lastLocalP[i] = -1;
 
     const total = this.duration + this.delayPaths * (this.pathCount - 1);
     const driver = { p: 0 };
@@ -379,18 +360,10 @@ export default class WavePath {
 
         const localP = clamp01((tNow - layerDelay) / this.duration);
 
-        const prevP = this.lastLocalP[i];
-
-        if (prevP >= 0 && Math.abs(localP - prevP) < WavePath.SKIP_DELTA_P) continue;
-
-        this.lastLocalP[i] = localP;
-
         const y = this.yWork[i];
-
         this.fillWaveYAtProgress(y, localP);
 
         const d = this.buildDCubic(y, opened);
-
         this.setPathD(i, d);
       }
     };
