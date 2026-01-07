@@ -1,5 +1,4 @@
 import { defineConfig } from 'vite';
-import terser from '@rollup/plugin-terser';
 import dts from 'vite-plugin-dts';
 
 export default defineConfig({
@@ -15,33 +14,17 @@ export default defineConfig({
     lib: {
       entry: 'src/index.ts',
       name: 'WavePath',
-      formats: ['es', 'cjs'],
+      formats: ['es', 'cjs', 'umd'],
       fileName: (format) => `index.${format}.js`,
     },
     emptyOutDir: true,
     rollupOptions: {
       external: ['gsap'],
-      plugins: [
-        terser({
-          compress: {
-            drop_console: true,
-            drop_debugger: true,
-            dead_code: true,
-            reduce_vars: true,
-            reduce_funcs: true,
-          },
-          mangle: {
-            toplevel: true,
-            reserved: ['WavePath'],
-          },
-          format: {
-            comments: false,
-          },
-        }),
-      ],
       output: {
+        globals: {
+          gsap: 'gsap',
+        },
         assetFileNames: 'index.[ext]',
-        exports: 'named',
       },
     },
   },

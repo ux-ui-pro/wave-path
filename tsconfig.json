@@ -1,20 +1,17 @@
 {
   "compilerOptions": {
+    "resolveJsonModule": true,
+    "isolatedModules": true,
     "target": "ESNext",
     "module": "ESNext",
-    "moduleResolution": "node",
     "strict": true,
-    "noImplicitAny": true,
-    "isolatedModules": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
+    "moduleResolution": "node",
+    "noImplicitAny": true,
     "lib": ["ES2022", "DOM"]
   },
-  "include": [
-    "src",
-    "vite-env.d.ts",
-    "vite.config.ts"
-  ]
+  "files": ["node_modules/gsap/types/index.d.ts"],
+  "include": ["src", "vite-env.d.ts", "vite.config.ts"]
 }

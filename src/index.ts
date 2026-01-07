@@ -1,162 +1,132 @@
 import gsap from 'gsap';
 
-type EaseLike = string | ((t: number) => number);
-
 export interface WavePathOptions {
   svgEl: string | SVGElement;
   pathEl?: string;
   numberPoints?: number;
-  delayPoints?: number;
+  waveAmplitude?: number;
   delayPaths?: number;
   duration?: number;
-  ease?: EaseLike;
   isOpened?: boolean;
 }
 
-const DEFAULTS = {
-  numberPoints: 4,
-  delayPoints: 0.3,
-  delayPaths: 0.25,
-  duration: 1,
-  ease: 'none' as EaseLike,
-  isOpened: false,
-} as const;
+type NormalizedOptions = Readonly<{
+  svgEl: string | SVGElement;
+  pathEl: string;
+  numberPoints: number;
+  waveAmplitude: number;
+  delayPaths: number;
+  duration: number;
+  isOpened: boolean;
+}>;
 
 const PERCENT_MIN = 0;
 const PERCENT_MAX = 100;
 
-type TimelineLike = {
-  isActive(): boolean;
-  totalDuration(): number;
-  eventCallback(event: 'onComplete', callback: null | (() => void)): TimelineLike;
-  kill(): void;
-  play(position?: number): TimelineLike;
-  pause(time?: number): TimelineLike;
-  clear(): TimelineLike;
-  progress(value?: number): TimelineLike;
-  to(target: unknown, vars: Record<string, unknown>, position?: number): TimelineLike;
-};
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, n));
+}
 
-type GSAPTimelineRaw = {
-  isActive?: () => boolean;
-  totalDuration?: () => number;
-  eventCallback?: (event: 'onComplete', callback: null | (() => void)) => unknown;
-  kill?: () => void;
-  play?: (position?: number) => unknown;
-  pause?: (time?: number) => unknown;
-  clear?: () => unknown;
-  progress?: (value?: number) => unknown;
-  to?: (target: unknown, vars: Record<string, unknown>, position?: number) => unknown;
-};
+function clamp01(n: number): number {
+  return n < 0 ? 0 : n > 1 ? 1 : n;
+}
 
-function createTimeline(vars: {
-  defaults: { ease: EaseLike; duration: number };
-  onUpdate: () => void;
-  paused: boolean;
-}): TimelineLike {
-  const rawTimelineFactory = (
-    gsap as unknown as {
-      timeline: (v: typeof vars) => GSAPTimelineRaw;
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+function random01(): number {
+  try {
+    const g: unknown = globalThis as unknown;
+    const cryptoObj = (g as { crypto?: Crypto }).crypto;
+
+    if (cryptoObj?.getRandomValues) {
+      const a = new Uint32Array(1);
+
+      cryptoObj.getRandomValues(a);
+
+      return (a[0] >>> 0) / 4294967296;
     }
-  ).timeline;
+  } catch {
+    // ignore
+  }
 
-  const raw = rawTimelineFactory(vars);
+  return Math.random();
+}
 
-  let wrap: TimelineLike;
+function normalizeOptions(opts: WavePathOptions): NormalizedOptions {
+  const numberPoints = clamp(opts.numberPoints ?? 4, 3, 8);
+  const waveAmplitude = clamp(opts.waveAmplitude ?? 30, 0, 100);
 
-  wrap = {
-    isActive: (): boolean => (typeof raw.isActive === 'function' ? raw.isActive() : false),
-
-    totalDuration: (): number =>
-      typeof raw.totalDuration === 'function' ? (raw.totalDuration() ?? 0) : 0,
-
-    eventCallback: (event: 'onComplete', callback: null | (() => void)): TimelineLike => {
-      if (typeof raw.eventCallback === 'function') raw.eventCallback(event, callback);
-
-      return wrap;
-    },
-
-    kill: (): void => {
-      if (typeof raw.kill === 'function') raw.kill();
-    },
-
-    play: (position?: number): TimelineLike => {
-      if (typeof raw.play === 'function') raw.play(position);
-
-      return wrap;
-    },
-
-    pause: (time?: number): TimelineLike => {
-      if (typeof raw.pause === 'function') raw.pause(time);
-
-      return wrap;
-    },
-
-    clear: (): TimelineLike => {
-      if (typeof raw.clear === 'function') raw.clear();
-
-      return wrap;
-    },
-
-    progress: (value?: number): TimelineLike => {
-      if (typeof raw.progress === 'function') raw.progress(value);
-
-      return wrap;
-    },
-
-    to: (target: unknown, vars: Record<string, unknown>, position?: number): TimelineLike => {
-      if (typeof raw.to === 'function') raw.to(target, vars, position);
-
-      return wrap;
-    },
+  return {
+    svgEl: opts.svgEl,
+    pathEl: opts.pathEl ?? 'path',
+    numberPoints,
+    waveAmplitude,
+    delayPaths: opts.delayPaths ?? 0.25,
+    duration: opts.duration ?? 1,
+    isOpened: opts.isOpened ?? false,
   };
-
-  return wrap;
 }
 
 export default class WavePath {
-  private readonly options: Readonly<WavePathOptions>;
+  private static readonly SKIP_DELTA_P = 0.0015;
+  private static readonly EDGE_EPS_P = 0.0005;
+
+  private static readonly ENV_POWER = 0.5;
+  private static readonly RIPPLE_FREQ = 2;
+  private static readonly RIPPLE_GAIN = 0.5;
+
+  private readonly svgElRef: string | SVGElement;
+  private readonly pathSelector: string;
+
   private readonly numberPoints: number;
-  private readonly delayPoints: number;
   private readonly delayPaths: number;
   private readonly duration: number;
-  private readonly ease: EaseLike;
+  private readonly amplitude: number;
 
   private svg: SVGElement | null = null;
   private paths: SVGPathElement[] = [];
   private pathCount = 0;
+
   private segCount = 0;
+  private pStr: string[] = [];
+  private cpStr: string[] = [];
 
-  private p!: Float32Array;
-  private cp!: Float32Array;
-  private pStr!: string[];
-  private cpStr!: string[];
-  private ptsStr: string[] = [];
-
-  private tl?: TimelineLike;
+  private tl: gsap.core.Timeline | null = null;
   private _isOpened: boolean;
 
-  private pointsDelay: number[] = [];
-  private allPoints: number[][] = [];
-  private dBuf: string[] = [];
+  private readonly dBuf: string[] = [];
+  private readonly ptsStr: string[] = [];
+
+  private yWork: Float32Array[] = [];
+  private lastLocalP: Float32Array = new Float32Array(0);
   private prevD: string[] = [];
 
-  constructor(opts: WavePathOptions) {
-    const merged = {
-      ...DEFAULTS,
-      ...opts,
-      numberPoints: Math.max(2, opts.numberPoints ?? DEFAULTS.numberPoints),
-    } as const;
+  private sharedPhase = 0;
 
-    this.options = merged;
-    this.numberPoints = merged.numberPoints;
-    this.delayPoints = merged.delayPoints;
-    this.delayPaths = merged.delayPaths;
-    this.duration = merged.duration;
-    this.ease = merged.ease;
-    this._isOpened = merged.isOpened;
+  private tArr: Float32Array = new Float32Array(0);
+  private envArr: Float32Array = new Float32Array(0);
+  private baseSinEnvArr: Float32Array = new Float32Array(0);
+  private readonly flatTopY: Float32Array;
+
+  constructor(opts: WavePathOptions) {
+    const o = normalizeOptions(opts);
+
+    this.svgElRef = o.svgEl;
+    this.pathSelector = o.pathEl;
+
+    this.numberPoints = o.numberPoints;
+    this.delayPaths = o.delayPaths;
+    this.duration = o.duration;
+    this.amplitude = o.waveAmplitude;
+
+    this._isOpened = o.isOpened;
+
+    this.flatTopY = new Float32Array(this.numberPoints); // всегда 0
 
     this.precomputeX();
+    this.precomputePointParams();
   }
 
   public get isOpened(): boolean {
@@ -164,62 +134,58 @@ export default class WavePath {
   }
 
   public init(): void {
-    const { svgEl, pathEl = 'path' } = this.options;
-
     this.svg =
-      typeof svgEl === 'string' ? document.querySelector<SVGElement>(svgEl) : (svgEl ?? null);
+      typeof this.svgElRef === 'string'
+        ? document.querySelector<SVGElement>(this.svgElRef)
+        : (this.svgElRef ?? null);
 
     if (!this.svg) {
-      this.paths = [];
-      this.pathCount = 0;
-      this.prevD = [];
+      this.resetDomRefs();
+      this.killTimeline();
 
       return;
     }
 
-    this.paths = Array.from(this.svg.querySelectorAll<SVGPathElement>(pathEl));
+    this.paths = Array.from(this.svg.querySelectorAll<SVGPathElement>(this.pathSelector));
     this.pathCount = this.paths.length;
-    this.prevD = this.paths.map((p) => p.getAttribute('d') ?? '');
 
-    this.initializePointsStorage();
+    this.killTimeline();
 
-    this.tl = createTimeline({
-      defaults: { ease: this.ease, duration: this.duration },
-      onUpdate: () => this.render(),
-      paused: true,
-    });
+    if (this.pathCount === 0) {
+      this.resetDomRefs();
 
-    if (this.pathCount > 0) {
-      this.updateTimeline();
-      this.tl.progress(1);
+      return;
     }
+
+    this.allocateCaches();
+
+    const stableD = this.buildDCubic(this.flatTopY, this._isOpened);
+
+    for (let i = 0; i < this.pathCount; i++) this.setPathD(i, stableD);
   }
 
   public async open(): Promise<void> {
-    if (!this.tl || this.tl.isActive()) return;
+    if (this.isAnimating()) return;
 
     this._isOpened = true;
-    this.updateTimeline();
 
-    await this.playFromStart();
+    await this.playProgress(true);
   }
 
   public async close(): Promise<void> {
-    if (!this.tl || this.tl.isActive()) return;
+    if (this.isAnimating()) return;
 
     this._isOpened = false;
-    this.updateTimeline();
 
-    await this.playFromStart();
+    await this.playProgress(false);
   }
 
   public async toggle(): Promise<void> {
-    if (!this.tl || this.tl.isActive()) return;
+    if (this.isAnimating()) return;
 
     this._isOpened = !this._isOpened;
-    this.updateTimeline();
 
-    await this.playFromStart();
+    await this.playProgress(this._isOpened);
   }
 
   public totalDurationMs(): number {
@@ -227,27 +193,56 @@ export default class WavePath {
   }
 
   public stopIfActive(): void {
-    if (this.tl?.isActive()) this.tl.kill();
+    if (this.tl?.isActive()) this.killTimeline();
   }
 
   public destroy(): void {
-    if (this.tl) {
-      this.tl.eventCallback('onComplete', null);
-      this.tl.kill();
-    }
+    this.killTimeline();
+    this.resetDomRefs();
+    this.resetCaches();
+  }
 
-    for (const pts of this.allPoints) gsap.killTweensOf(pts);
+  private isAnimating(): boolean {
+    return Boolean(this.tl?.isActive());
+  }
 
+  private resetDomRefs(): void {
     this.svg = null;
     this.paths = [];
     this.pathCount = 0;
-
-    this.pointsDelay = [];
-    this.allPoints = [];
-    this.dBuf = [];
     this.prevD = [];
+  }
 
-    this.tl = undefined;
+  private resetCaches(): void {
+    this.yWork = [];
+    this.lastLocalP = new Float32Array(0);
+  }
+
+  private allocateCaches(): void {
+    this.yWork = new Array(this.pathCount);
+    this.lastLocalP = new Float32Array(this.pathCount);
+    this.prevD = new Array(this.pathCount);
+
+    for (let i = 0; i < this.pathCount; i++) {
+      this.yWork[i] = new Float32Array(this.numberPoints);
+      this.lastLocalP[i] = -1;
+      this.prevD[i] = this.paths[i].getAttribute('d') ?? '';
+    }
+  }
+
+  private setPathD(i: number, d: string): void {
+    if (this.prevD[i] === d) return;
+
+    this.paths[i].setAttribute('d', d);
+    this.prevD[i] = d;
+  }
+
+  private killTimeline(): void {
+    if (!this.tl) return;
+
+    this.tl.eventCallback('onComplete', null);
+    this.tl.kill();
+    this.tl = null;
   }
 
   private precomputeX(): void {
@@ -255,8 +250,6 @@ export default class WavePath {
 
     const step = PERCENT_MAX / this.segCount;
 
-    this.p = new Float32Array(this.segCount);
-    this.cp = new Float32Array(this.segCount);
     this.pStr = new Array<string>(this.segCount);
     this.cpStr = new Array<string>(this.segCount);
 
@@ -264,128 +257,169 @@ export default class WavePath {
       const pVal = (j + 1) * step;
       const cpVal = pVal - step / 2;
 
-      this.p[j] = pVal;
-      this.cp[j] = cpVal;
-
       this.pStr[j] = WavePath.fmt(pVal);
       this.cpStr[j] = WavePath.fmt(cpVal);
     }
   }
 
-  private initializePointsStorage(): void {
+  private precomputePointParams(): void {
     const n = this.numberPoints;
 
-    this.allPoints = Array.from({ length: this.pathCount }, () =>
-      new Array<number>(n).fill(PERCENT_MAX),
-    );
+    this.tArr = new Float32Array(n);
+    this.envArr = new Float32Array(n);
+    this.baseSinEnvArr = new Float32Array(n);
 
-    this.pointsDelay = new Array<number>(n).fill(0);
+    for (let i = 0; i < n; i++) {
+      const t = n === 1 ? 0 : i / (n - 1);
+
+      this.tArr[i] = t;
+
+      const envRaw = 1 - Math.abs(2 * t - 1);
+
+      this.envArr[i] = envRaw ** WavePath.ENV_POWER;
+      this.baseSinEnvArr[i] = 0;
+    }
   }
 
   private static fmt(n: number): string {
-    const v = Math.round(n * 10) / 10;
+    const v = Math.round(n * 100) / 100;
 
     return Number.isInteger(v) ? String(v | 0) : String(v);
   }
 
-  private render(): void {
-    if (this.pathCount === 0) return;
+  private static fmtY(n: number): string {
+    const v = Math.round(n * 10) / 10;
+    const iv = v | 0;
 
-    const { paths, allPoints, segCount, cpStr, pStr, ptsStr } = this;
-    const opened = this._isOpened;
-    const buf = this.dBuf;
+    return v === iv ? String(iv) : String(v);
+  }
 
-    for (let i = 0; i < paths.length; i++) {
-      const pathEl = paths[i];
-      const pts = allPoints[i];
+  private rollNewSharedWaveProfile(): void {
+    this.sharedPhase = random01() * Math.PI * 2;
 
-      ptsStr.length = this.numberPoints;
+    const phase = this.sharedPhase;
+    const n = this.numberPoints;
+    const FREQ = WavePath.RIPPLE_FREQ;
 
-      for (let j = 0; j < this.numberPoints; j++) {
-        const v = Math.round(pts[j] * 10) / 10;
-
-        ptsStr[j] = Number.isInteger(v) ? String(v | 0) : String(v);
-      }
-
-      buf.length = 0;
-
-      buf.push(
-        'M',
-        '0',
-        ptsStr[0],
-        'C',
-        cpStr[0],
-        ptsStr[0],
-        cpStr[0],
-        ptsStr[1],
-        pStr[0],
-        ptsStr[1],
-      );
-
-      for (let j = 1; j < segCount; j++) {
-        buf.push('S', cpStr[j], ptsStr[j + 1], pStr[j], ptsStr[j + 1]);
-      }
-
-      if (opened) {
-        buf.push('V', String(PERCENT_MAX), 'H', '0');
-      } else {
-        buf.push('V', String(PERCENT_MIN), 'H', '0');
-      }
-
-      const d = buf.join(' ');
-
-      if (this.prevD[i] !== d) {
-        pathEl.setAttribute('d', d);
-
-        this.prevD[i] = d;
-      }
+    for (let i = 0; i < n; i++) {
+      this.baseSinEnvArr[i] = Math.sin(this.tArr[i] * Math.PI * FREQ + phase) * this.envArr[i];
     }
   }
 
-  private updateTimeline(): void {
-    if (!this.tl) return;
+  private fillWaveYAtProgress(out: Float32Array, p: number): void {
+    let pp = clamp01(p);
 
-    const tl = this.tl;
+    if (pp < WavePath.EDGE_EPS_P) pp = 0;
+    else if (pp > 1 - WavePath.EDGE_EPS_P) pp = 1;
 
-    tl.pause(0).clear();
+    const lift = lerp(PERCENT_MAX, PERCENT_MIN, pp);
+    const waveK = Math.sin(Math.PI * pp);
 
-    this.prepareDelays();
-    this.enqueueTweens(tl);
+    const rippleFactor = this.amplitude * WavePath.RIPPLE_GAIN * waveK;
+    const n = this.numberPoints;
+
+    for (let i = 0; i < n; i++) {
+      const y = lift + this.baseSinEnvArr[i] * rippleFactor;
+
+      out[i] = clamp(y, PERCENT_MIN, PERCENT_MAX);
+    }
   }
 
-  private prepareDelays(): void {
+  private buildDCubic(y: Float32Array, opened: boolean): string {
+    const { cpStr, pStr, segCount, dBuf, ptsStr } = this;
+
+    ptsStr.length = this.numberPoints;
+
     for (let j = 0; j < this.numberPoints; j++) {
-      this.pointsDelay[j] = Math.random() * this.delayPoints;
+      ptsStr[j] = WavePath.fmtY(y[j]);
     }
+
+    dBuf.length = 0;
+
+    dBuf.push(
+      'M',
+      '0',
+      ptsStr[0],
+      'C',
+      cpStr[0],
+      ptsStr[0],
+      cpStr[0],
+      ptsStr[1],
+      pStr[0],
+      ptsStr[1],
+    );
+
+    for (let j = 1; j < segCount; j++) {
+      dBuf.push('S', cpStr[j], ptsStr[j + 1], pStr[j], ptsStr[j + 1]);
+    }
+
+    dBuf.push('V', opened ? '100' : '0', 'H', '0');
+
+    return dBuf.join(' ');
   }
 
-  private enqueueTweens(tl: TimelineLike): void {
-    const opened = this._isOpened;
-    const delayPaths = this.delayPaths;
-    const pathCount = this.pathCount;
+  private async playProgress(opened: boolean): Promise<void> {
+    if (!this.svg || this.pathCount === 0) return;
 
-    for (let i = 0; i < pathCount; i++) {
-      const pts = this.allPoints[i];
-      const pathDelay = delayPaths * (opened ? i : pathCount - i - 1);
+    this.killTimeline();
 
-      for (let j = 0; j < this.numberPoints; j++) {
-        tl.to(pts, { [j]: PERCENT_MIN }, this.pointsDelay[j] + pathDelay);
+    this.rollNewSharedWaveProfile();
+
+    for (let i = 0; i < this.pathCount; i++) this.lastLocalP[i] = -1;
+
+    const total = this.duration + this.delayPaths * (this.pathCount - 1);
+    const driver = { p: 0 };
+
+    const render = (): void => {
+      const tNow = clamp01(driver.p) * total;
+
+      for (let i = 0; i < this.pathCount; i++) {
+        const layerIndex = opened ? i : this.pathCount - i - 1;
+        const layerDelay = this.delayPaths * layerIndex;
+
+        const localP = clamp01((tNow - layerDelay) / this.duration);
+
+        const prevP = this.lastLocalP[i];
+
+        if (prevP >= 0 && Math.abs(localP - prevP) < WavePath.SKIP_DELTA_P) continue;
+
+        this.lastLocalP[i] = localP;
+
+        const y = this.yWork[i];
+
+        this.fillWaveYAtProgress(y, localP);
+
+        const d = this.buildDCubic(y, opened);
+
+        this.setPathD(i, d);
       }
-    }
-  }
+    };
 
-  private async playFromStart(): Promise<void> {
-    if (!this.tl) return;
+    const tl = gsap.timeline({ paused: true });
+
+    tl.to(driver, {
+      p: 1,
+      duration: total,
+      ease: 'none',
+      onUpdate: render,
+      onComplete: () => {
+        const stableD = this.buildDCubic(this.flatTopY, opened);
+        for (let i = 0; i < this.pathCount; i++) this.setPathD(i, stableD);
+      },
+    });
+
+    this.tl = tl;
+
+    render();
 
     await new Promise<void>((resolve) => {
-      const onComplete = (): void => {
-        this.tl!.eventCallback('onComplete', null);
+      tl.eventCallback('onComplete', () => {
+        tl.eventCallback('onComplete', null);
 
         resolve();
-      };
+      });
 
-      this.tl!.eventCallback('onComplete', onComplete);
-      this.tl!.play(0);
+      tl.play(0);
     });
   }
 }
