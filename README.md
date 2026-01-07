@@ -11,7 +11,7 @@
 
 <sup>~2kB gzipped (library code; excluding dependencies)</sup>
 
-<a href="https://codepen.io/ux-ui/pen/PwzPwBw">Demo</a>
+<a href="https://codepen.io/ux-ui/pen/Jjervqg">Demo</a>
 
 </div>
 
