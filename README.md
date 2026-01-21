@@ -19,7 +19,7 @@
 
 ➠ **Install**
 ```console
-yarn add wave-path gsap
+yarn add wave-path
 ```
 
 <br>
@@ -55,7 +55,7 @@ await wavePath.toggle();
 // helper info
 console.log(wavePath.isOpened);            // boolean
 console.log(wavePath.totalDurationMs());   // number in ms
-wavePath.stopIfActive();                   // kill active timeline if any
+wavePath.stopIfActive();                   // kill active animation if any
 ```
 
 <br>
@@ -82,16 +82,14 @@ wavePath.stopIfActive();                   // kill active timeline if any
 | `toggle()`          | Toggles between opened/closed. Returns a `Promise<void>` resolved on animation complete.                                                                 |
 | `open()`            | Opens the overlay. Returns a `Promise<void>` resolved on animation complete.                                                                             |
 | `close()`           | Closes the overlay. Returns a `Promise<void>` resolved on animation complete.                                                                            |
-| `totalDurationMs()` | Returns total duration of the current animation in **milliseconds** (includes `delayPaths`).                                                             |
-| `stopIfActive()`    | Stops the current animation timeline if active. Useful for cancelling or resetting animations.                                                           |
-| `destroy()`         | Kills timelines, clears references and caches; safe to call multiple times.                                                                              |
+| `totalDurationMs()` | Returns total duration of the current animation in **milliseconds** (includes `delayPaths`). Call after `init()` so `pathCount` is known.                |
+| `stopIfActive()`    | Stops the current animation if active. Useful for cancelling or resetting animations.                                                                    |
+| `destroy()`         | Cancels animations, clears references and caches; safe to call multiple times.                                                                           |
 | `isOpened` (getter) | Current logical state of the overlay (`boolean`).                                                                                                        |
 
 <br>
 
 ➠ **Notes**
-
-- **GSAP:** animations are driven by GSAP timeline internally (install `gsap` alongside the library).
 - **Layering:** if your SVG contains multiple `<path>` nodes matching `pathEl`, each path is animated as a layer with `delayPaths` between layers.
 - **Rendering:** the library updates `d` attributes of SVG `<path>` elements to produce smooth multi-segment cubic bezier wave transitions.
 - **Performance:** the implementation uses typed arrays and reuses string buffers to reduce allocations.

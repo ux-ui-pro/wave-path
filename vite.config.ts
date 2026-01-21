@@ -19,11 +19,7 @@ export default defineConfig({
     },
     emptyOutDir: true,
     rollupOptions: {
-      external: ['gsap'],
       output: {
-        globals: {
-          gsap: 'gsap',
-        },
         assetFileNames: 'index.[ext]',
       },
     },

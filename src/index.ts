@@ -1,5 +1,3 @@
-import gsap from 'gsap';
-
 export interface WavePathOptions {
   svgEl: string | SVGElement;
   pathEl?: string;
@@ -28,11 +26,28 @@ function clamp(n: number, min: number, max: number): number {
 }
 
 function clamp01(n: number): number {
-  return n < 0 ? 0 : n > 1 ? 1 : n;
+  return n <= 0 ? 0 : n >= 1 ? 1 : n;
 }
 
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
+}
+
+function easeInOutPow(t: number, k: number): number {
+  const x = clamp01(t);
+  if (x < 0.5) return 0.5 * Math.pow(2 * x, k);
+  return 1 - 0.5 * Math.pow(2 * (1 - x), k);
+}
+
+function easeInOutCos(t: number): number {
+  const x = clamp01(t);
+  return 0.5 - 0.5 * Math.cos(Math.PI * x);
+}
+
+function bellCurve(t: number, shape = 1): number {
+  const x = clamp01(t);
+  const b = Math.sin(Math.PI * x);
+  return shape === 1 ? b : Math.pow(b, shape);
 }
 
 function random01(): number {
@@ -42,9 +57,7 @@ function random01(): number {
 
     if (cryptoObj?.getRandomValues) {
       const a = new Uint32Array(1);
-
       cryptoObj.getRandomValues(a);
-
       return (a[0] >>> 0) / 4294967296;
     }
   } catch {
@@ -70,356 +83,348 @@ function normalizeOptions(opts: WavePathOptions): NormalizedOptions {
 }
 
 export default class WavePath {
-  private static readonly SKIP_DELTA_P = 0.0015;
-  private static readonly EDGE_EPS_P = 0.0005;
-
   private static readonly ENV_POWER = 0.5;
   private static readonly RIPPLE_FREQ = 2;
   private static readonly RIPPLE_GAIN = 0.5;
 
-  private readonly svgElRef: string | SVGElement;
+  private static readonly LIFT_EASE_POW = 1.6;
+  private static readonly BELL_SHAPE = 0.85;
+  private static readonly RIPPLE_SHIFT = 0.0;
+
+  private readonly svgRef: string | SVGElement;
   private readonly pathSelector: string;
 
-  private readonly numberPoints: number;
-  private readonly delayPaths: number;
-  private readonly duration: number;
+  private readonly pointCount: number;
+  private readonly pathDelay: number;
+  private readonly durationSec: number;
   private readonly amplitude: number;
 
   private svg: SVGElement | null = null;
-  private paths: SVGPathElement[] = [];
+  private pathEls: SVGPathElement[] = [];
   private pathCount = 0;
 
-  private segCount = 0;
-  private pStr: string[] = [];
-  private cpStr: string[] = [];
+  private segmentCount = 0;
+  private segmentStep = 0;
+  private pPositions: string[] = [];
+  private cpPositions: string[] = [];
 
-  private tl: gsap.core.Timeline | null = null;
-  private _isOpened: boolean;
+  private readonly dParts: string[] = [];
+  private readonly pointStrings: string[] = [];
+  private prevPathD: string[] = [];
 
-  private readonly dBuf: string[] = [];
-  private readonly ptsStr: string[] = [];
+  private yBuffers: Float32Array[] = [];
+  private tValues: Float32Array = new Float32Array(0);
+  private envValues: Float32Array = new Float32Array(0);
+  private baseWave: Float32Array = new Float32Array(0);
+  private readonly flatTopPoints: Float32Array;
 
-  private yWork: Float32Array[] = [];
-  private lastLocalP: Float32Array = new Float32Array(0);
-  private prevD: string[] = [];
+  private isOpenState: boolean;
 
-  private sharedPhase = 0;
-
-  private tArr: Float32Array = new Float32Array(0);
-  private envArr: Float32Array = new Float32Array(0);
-  private baseSinEnvArr: Float32Array = new Float32Array(0);
-  private readonly flatTopY: Float32Array;
+  private rafId: number | null = null;
+  private animToken = 0;
 
   constructor(opts: WavePathOptions) {
     const o = normalizeOptions(opts);
 
-    this.svgElRef = o.svgEl;
+    this.svgRef = o.svgEl;
     this.pathSelector = o.pathEl;
 
-    this.numberPoints = o.numberPoints;
-    this.delayPaths = o.delayPaths;
-    this.duration = o.duration;
+    this.pointCount = o.numberPoints;
+    this.pathDelay = o.delayPaths;
+    this.durationSec = o.duration;
     this.amplitude = o.waveAmplitude;
 
-    this._isOpened = o.isOpened;
+    this.isOpenState = o.isOpened;
 
-    this.flatTopY = new Float32Array(this.numberPoints); // всегда 0
+    this.flatTopPoints = new Float32Array(this.pointCount);
 
-    this.precomputeX();
-    this.precomputePointParams();
+    this.computeSegmentParams();
+    this.computePointParams();
   }
 
   public get isOpened(): boolean {
-    return this._isOpened;
+    return this.isOpenState;
   }
 
   public init(): void {
     this.svg =
-      typeof this.svgElRef === 'string'
-        ? document.querySelector<SVGElement>(this.svgElRef)
-        : (this.svgElRef ?? null);
+      typeof this.svgRef === 'string'
+        ? document.querySelector<SVGElement>(this.svgRef)
+        : (this.svgRef ?? null);
 
     if (!this.svg) {
       this.resetDomRefs();
-      this.killTimeline();
-
+      this.cancelAnim();
       return;
     }
 
-    this.paths = Array.from(this.svg.querySelectorAll<SVGPathElement>(this.pathSelector));
-    this.pathCount = this.paths.length;
+    this.pathEls = Array.from(this.svg.querySelectorAll<SVGPathElement>(this.pathSelector));
+    this.pathCount = this.pathEls.length;
 
-    this.killTimeline();
+    this.cancelAnim();
 
     if (this.pathCount === 0) {
       this.resetDomRefs();
-
       return;
     }
 
     this.allocateCaches();
-
-    const stableD = this.buildDCubic(this.flatTopY, this._isOpened);
-
+    const stableD = this.buildCubicPath(this.flatTopPoints, this.isOpenState);
     for (let i = 0; i < this.pathCount; i++) this.setPathD(i, stableD);
   }
 
   public async open(): Promise<void> {
     if (this.isAnimating()) return;
-
-    this._isOpened = true;
-
+    this.isOpenState = true;
     await this.playProgress(true);
   }
 
   public async close(): Promise<void> {
     if (this.isAnimating()) return;
-
-    this._isOpened = false;
-
+    this.isOpenState = false;
     await this.playProgress(false);
   }
 
   public async toggle(): Promise<void> {
     if (this.isAnimating()) return;
-
-    this._isOpened = !this._isOpened;
-
-    await this.playProgress(this._isOpened);
+    this.isOpenState = !this.isOpenState;
+    await this.playProgress(this.isOpenState);
   }
 
   public totalDurationMs(): number {
-    return this.tl ? Math.round(this.tl.totalDuration() * 1000) : 0;
+    return Math.round((this.durationSec + this.pathDelay * (this.pathCount - 1)) * 1000);
   }
 
   public stopIfActive(): void {
-    if (this.tl?.isActive()) this.killTimeline();
+    this.cancelAnim();
   }
 
   public destroy(): void {
-    this.killTimeline();
+    this.cancelAnim();
     this.resetDomRefs();
     this.resetCaches();
   }
 
   private isAnimating(): boolean {
-    return Boolean(this.tl?.isActive());
+    return this.rafId != null;
+  }
+
+  private cancelAnim(): void {
+    this.animToken++;
+    if (this.rafId != null) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = null;
+    }
   }
 
   private resetDomRefs(): void {
     this.svg = null;
-    this.paths = [];
+    this.pathEls = [];
     this.pathCount = 0;
-    this.prevD = [];
+    this.prevPathD = [];
   }
 
   private resetCaches(): void {
-    this.yWork = [];
-    this.lastLocalP = new Float32Array(0);
+    this.yBuffers = [];
+    this.baseWave = new Float32Array(0);
   }
 
   private allocateCaches(): void {
-    this.yWork = new Array(this.pathCount);
-    this.lastLocalP = new Float32Array(this.pathCount);
-    this.prevD = new Array(this.pathCount);
+    this.yBuffers = new Array(this.pathCount);
+    this.prevPathD = new Array(this.pathCount);
 
     for (let i = 0; i < this.pathCount; i++) {
-      this.yWork[i] = new Float32Array(this.numberPoints);
-      this.lastLocalP[i] = -1;
-      this.prevD[i] = this.paths[i].getAttribute('d') ?? '';
+      this.yBuffers[i] = new Float32Array(this.pointCount);
+      this.prevPathD[i] = '';
     }
   }
 
   private setPathD(i: number, d: string): void {
-    if (this.prevD[i] === d) return;
-
-    this.paths[i].setAttribute('d', d);
-    this.prevD[i] = d;
+    if (this.prevPathD[i] === d) return;
+    this.pathEls[i].setAttribute('d', d);
+    this.prevPathD[i] = d;
   }
 
-  private killTimeline(): void {
-    if (!this.tl) return;
+  private computeSegmentParams(): void {
+    this.segmentCount = Math.max(1, this.pointCount - 1);
+    this.segmentStep = PERCENT_MAX / this.segmentCount;
 
-    this.tl.eventCallback('onComplete', null);
-    this.tl.kill();
-    this.tl = null;
-  }
+    this.pPositions = new Array(this.segmentCount);
+    this.cpPositions = new Array(this.segmentCount);
 
-  private precomputeX(): void {
-    this.segCount = Math.max(1, this.numberPoints - 1);
+    for (let j = 0; j < this.segmentCount; j++) {
+      const pVal = (j + 1) * this.segmentStep;
+      const cpVal = pVal - this.segmentStep / 2;
 
-    const step = PERCENT_MAX / this.segCount;
-
-    this.pStr = new Array<string>(this.segCount);
-    this.cpStr = new Array<string>(this.segCount);
-
-    for (let j = 0; j < this.segCount; j++) {
-      const pVal = (j + 1) * step;
-      const cpVal = pVal - step / 2;
-
-      this.pStr[j] = WavePath.fmt(pVal);
-      this.cpStr[j] = WavePath.fmt(cpVal);
+      this.pPositions[j] = WavePath.fmt(pVal);
+      this.cpPositions[j] = WavePath.fmt(cpVal);
     }
   }
 
-  private precomputePointParams(): void {
-    const n = this.numberPoints;
+  private computePointParams(): void {
+    const n = this.pointCount;
 
-    this.tArr = new Float32Array(n);
-    this.envArr = new Float32Array(n);
-    this.baseSinEnvArr = new Float32Array(n);
+    this.tValues = new Float32Array(n);
+    this.envValues = new Float32Array(n);
+    this.baseWave = new Float32Array(n);
 
     for (let i = 0; i < n; i++) {
       const t = n === 1 ? 0 : i / (n - 1);
-
-      this.tArr[i] = t;
+      this.tValues[i] = t;
 
       const envRaw = 1 - Math.abs(2 * t - 1);
-
-      this.envArr[i] = envRaw ** WavePath.ENV_POWER;
-      this.baseSinEnvArr[i] = 0;
+      this.envValues[i] = envRaw ** WavePath.ENV_POWER;
+      this.baseWave[i] = 0;
     }
   }
 
   private static fmt(n: number): string {
-    const v = Math.round(n * 100) / 100;
-
-    return Number.isInteger(v) ? String(v | 0) : String(v);
+    const v = Math.round(n * 10) / 10;
+    const iv = v | 0;
+    return v === iv ? String(iv) : String(v);
   }
 
   private static fmtY(n: number): string {
     const v = Math.round(n * 10) / 10;
     const iv = v | 0;
-
     return v === iv ? String(iv) : String(v);
   }
 
-  private rollNewSharedWaveProfile(): void {
-    this.sharedPhase = random01() * Math.PI * 2;
+  private static motionProfile(p: number): { pos: number; bell: number } {
+    const t = clamp01(p);
 
-    const phase = this.sharedPhase;
-    const n = this.numberPoints;
+    const pos = easeInOutPow(t, WavePath.LIFT_EASE_POW);
+
+    const rippleT = easeInOutCos(clamp01(t + WavePath.RIPPLE_SHIFT));
+    const bell = bellCurve(rippleT, WavePath.BELL_SHAPE);
+
+    return { pos, bell };
+  }
+
+  private rollWaveProfile(): void {
+    const phase = random01() * Math.PI * 2;
+    const n = this.pointCount;
     const FREQ = WavePath.RIPPLE_FREQ;
 
     for (let i = 0; i < n; i++) {
-      this.baseSinEnvArr[i] = Math.sin(this.tArr[i] * Math.PI * FREQ + phase) * this.envArr[i];
+      this.baseWave[i] = Math.sin(this.tValues[i] * Math.PI * FREQ + phase) * this.envValues[i];
     }
   }
 
-  private fillWaveYAtProgress(out: Float32Array, p: number): void {
-    let pp = clamp01(p);
+  private fillWaveAtProgress(out: Float32Array, p: number): void {
+    const pp = p <= 0 ? 0 : p >= 1 ? 1 : p;
+    const { pos, bell } = WavePath.motionProfile(pp);
 
-    if (pp < WavePath.EDGE_EPS_P) pp = 0;
-    else if (pp > 1 - WavePath.EDGE_EPS_P) pp = 1;
+    const lift = lerp(PERCENT_MAX, PERCENT_MIN, pos);
+    let rippleFactor = this.amplitude * WavePath.RIPPLE_GAIN * bell;
 
-    const lift = lerp(PERCENT_MAX, PERCENT_MIN, pp);
-    const waveK = Math.sin(Math.PI * pp);
+    const maxUp = PERCENT_MAX - lift;
+    const maxDown = lift - PERCENT_MIN;
 
-    const rippleFactor = this.amplitude * WavePath.RIPPLE_GAIN * waveK;
-    const n = this.numberPoints;
+    let limit = Infinity;
 
-    for (let i = 0; i < n; i++) {
-      const y = lift + this.baseSinEnvArr[i] * rippleFactor;
+    for (let i = 0; i < this.pointCount; i++) {
+      const b = this.baseWave[i];
+      if (b === 0) continue;
 
+      const localLimit = b > 0 ? maxUp / b : maxDown / -b;
+      if (localLimit < limit) limit = localLimit;
+    }
+
+    if (Number.isFinite(limit)) {
+      rippleFactor = Math.min(rippleFactor, Math.max(0, limit * 0.98));
+    }
+
+    for (let i = 0; i < this.pointCount; i++) {
+      const y = lift + this.baseWave[i] * rippleFactor;
       out[i] = clamp(y, PERCENT_MIN, PERCENT_MAX);
     }
   }
 
-  private buildDCubic(y: Float32Array, opened: boolean): string {
-    const { cpStr, pStr, segCount, dBuf, ptsStr } = this;
+  private buildCubicPath(y: Float32Array, opened: boolean): string {
+    const { cpPositions, pPositions, segmentCount, dParts, pointStrings } = this;
 
-    ptsStr.length = this.numberPoints;
-
-    for (let j = 0; j < this.numberPoints; j++) {
-      ptsStr[j] = WavePath.fmtY(y[j]);
+    pointStrings.length = this.pointCount;
+    for (let j = 0; j < this.pointCount; j++) {
+      pointStrings[j] = WavePath.fmtY(y[j]);
     }
 
-    dBuf.length = 0;
-
-    dBuf.push(
+    dParts.length = 0;
+    dParts.push(
       'M',
       '0',
-      ptsStr[0],
+      pointStrings[0],
       'C',
-      cpStr[0],
-      ptsStr[0],
-      cpStr[0],
-      ptsStr[1],
-      pStr[0],
-      ptsStr[1],
+      cpPositions[0],
+      pointStrings[0],
+      cpPositions[0],
+      pointStrings[1],
+      pPositions[0],
+      pointStrings[1],
     );
 
-    for (let j = 1; j < segCount; j++) {
-      dBuf.push('S', cpStr[j], ptsStr[j + 1], pStr[j], ptsStr[j + 1]);
+    for (let j = 1; j < segmentCount; j++) {
+      dParts.push('S', cpPositions[j], pointStrings[j + 1], pPositions[j], pointStrings[j + 1]);
     }
 
-    dBuf.push('V', opened ? '100' : '0', 'H', '0');
-
-    return dBuf.join(' ');
+    dParts.push('V', opened ? '100' : '0', 'H', '0');
+    return dParts.join(' ');
   }
 
   private async playProgress(opened: boolean): Promise<void> {
     if (!this.svg || this.pathCount === 0) return;
 
-    this.killTimeline();
+    this.cancelAnim();
+    this.rollWaveProfile();
 
-    this.rollNewSharedWaveProfile();
+    const total = this.durationSec + this.pathDelay * (this.pathCount - 1);
+    const totalMs = total * 1000;
 
-    for (let i = 0; i < this.pathCount; i++) this.lastLocalP[i] = -1;
+    const token = ++this.animToken;
+    const start = performance.now();
 
-    const total = this.duration + this.delayPaths * (this.pathCount - 1);
-    const driver = { p: 0 };
-
-    const render = (): void => {
-      const tNow = clamp01(driver.p) * total;
+    const renderAt = (globalP: number): void => {
+      const tNow = clamp01(globalP) * total;
 
       for (let i = 0; i < this.pathCount; i++) {
         const layerIndex = opened ? i : this.pathCount - i - 1;
-        const layerDelay = this.delayPaths * layerIndex;
+        const layerDelay = this.pathDelay * layerIndex;
 
-        const localP = clamp01((tNow - layerDelay) / this.duration);
+        const localP = clamp01((tNow - layerDelay) / this.durationSec);
 
-        const prevP = this.lastLocalP[i];
+        const y = this.yBuffers[i];
+        this.fillWaveAtProgress(y, localP);
 
-        if (prevP >= 0 && Math.abs(localP - prevP) < WavePath.SKIP_DELTA_P) continue;
-
-        this.lastLocalP[i] = localP;
-
-        const y = this.yWork[i];
-
-        this.fillWaveYAtProgress(y, localP);
-
-        const d = this.buildDCubic(y, opened);
-
+        const d = this.buildCubicPath(y, opened);
         this.setPathD(i, d);
       }
     };
 
-    const tl = gsap.timeline({ paused: true });
-
-    tl.to(driver, {
-      p: 1,
-      duration: total,
-      ease: 'none',
-      onUpdate: render,
-      onComplete: () => {
-        const stableD = this.buildDCubic(this.flatTopY, opened);
-        for (let i = 0; i < this.pathCount; i++) this.setPathD(i, stableD);
-      },
-    });
-
-    this.tl = tl;
-
-    render();
+    renderAt(0);
 
     await new Promise<void>((resolve) => {
-      tl.eventCallback('onComplete', () => {
-        tl.eventCallback('onComplete', null);
+      const tick = (now: number) => {
+        if (token !== this.animToken) return;
 
-        resolve();
-      });
+        const elapsed = now - start;
+        const p = elapsed / totalMs;
 
-      tl.play(0);
+        renderAt(p);
+
+        if (p >= 1) {
+          this.rafId = null;
+
+          const stableD = this.buildCubicPath(this.flatTopPoints, opened);
+          for (let i = 0; i < this.pathCount; i++) this.setPathD(i, stableD);
+
+          resolve();
+          return;
+        }
+
+        this.rafId = requestAnimationFrame(tick);
+      };
+
+      this.rafId = requestAnimationFrame(tick);
     });
   }
 }

@@ -12,6 +12,5 @@
     "noImplicitAny": true,
     "lib": ["ES2022", "DOM"]
   },
-  "files": ["node_modules/gsap/types/index.d.ts"],
   "include": ["src", "vite-env.d.ts", "vite.config.ts"]
 }
