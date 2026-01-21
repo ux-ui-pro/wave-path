@@ -9,7 +9,7 @@
 [![GitHub package version](https://img.shields.io/github/package-json/v/ux-ui-pro/wave-path.svg)](https://github.com/ux-ui-pro/wave-path)
 [![NPM Downloads](https://img.shields.io/npm/dm/wave-path.svg?style=flat)](https://www.npmjs.org/package/wave-path)
 
-<sup>~2kB gzipped (library code; excluding dependencies)</sup>
+<sup>~2kB gzipped</sup>
 
 <a href="https://codepen.io/ux-ui/pen/Jjervqg">Demo</a>
 
@@ -17,21 +17,21 @@
 
 <br>
 
-➠ **Install**
+# Install
 ```console
 yarn add wave-path
 ```
 
 <br>
 
-➠ **Import**
+# Import
 ```ts
 import WavePath from 'wave-path';
 ```
 
 <br>
 
-➠ **Usage**
+# Usage
 ```ts
 const wavePath = new WavePath({
   svgEl: '.svg',       // required: SVGElement or selector
@@ -60,8 +60,7 @@ wavePath.stopIfActive();                   // kill active animation if any
 
 <br>
 
-➠ **Options**
-
+# Options
 | Option          | Type                   |   Default    | Description                                                                                           |
 |:----------------|:-----------------------|:------------:|:------------------------------------------------------------------------------------------------------|
 | `svgEl`         | `string \| SVGElement` | **required** | **Required.** SVG container selector or element node.                                                 |
@@ -74,8 +73,7 @@ wavePath.stopIfActive();                   // kill active animation if any
 
 <br>
 
-➠ **API**
-
+# API
 | Member / Method     | Description                                                                                                                                              |
 |:--------------------|:---------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `init()`            | Resolves DOM references, allocates internal buffers, and sets a stable initial shape based on `isOpened`. Safe to call again if the SVG content changes. |
@@ -89,13 +87,12 @@ wavePath.stopIfActive();                   // kill active animation if any
 
 <br>
 
-➠ **Notes**
+# Notes
 - **Layering:** if your SVG contains multiple `<path>` nodes matching `pathEl`, each path is animated as a layer with `delayPaths` between layers.
 - **Rendering:** the library updates `d` attributes of SVG `<path>` elements to produce smooth multi-segment cubic bezier wave transitions.
 - **Performance:** the implementation uses typed arrays and reuses string buffers to reduce allocations.
 
 <br>
 
-➠ **License**
-
-wave-path is released under the MIT license.
+# License
+MIT
