@@ -35,8 +35,8 @@ function lerp(a: number, b: number, t: number): number {
 
 function easeInOutPow(t: number, k: number): number {
   const x = clamp01(t);
-  if (x < 0.5) return 0.5 * Math.pow(2 * x, k);
-  return 1 - 0.5 * Math.pow(2 * (1 - x), k);
+  if (x < 0.5) return 0.5 * (2 * x) ** k;
+  return 1 - 0.5 * (2 * (1 - x)) ** k;
 }
 
 function easeInOutCos(t: number): number {
@@ -47,7 +47,7 @@ function easeInOutCos(t: number): number {
 function bellCurve(t: number, shape = 1): number {
   const x = clamp01(t);
   const b = Math.sin(Math.PI * x);
-  return shape === 1 ? b : Math.pow(b, shape);
+  return shape === 1 ? b : b ** shape;
 }
 
 function random01(): number {
