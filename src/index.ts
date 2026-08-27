@@ -20,6 +20,9 @@ type NormalizedOptions = Readonly<{
 
 const PERCENT_MIN = 0;
 const PERCENT_MAX = 100;
+const POINT_COUNT_MIN = 3;
+const POINT_COUNT_MAX = 32;
+const POINT_COUNT_DEFAULT = 4;
 
 function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
@@ -68,7 +71,11 @@ function random01(): number {
 }
 
 function normalizeOptions(opts: WavePathOptions): NormalizedOptions {
-  const numberPoints = clamp(opts.numberPoints ?? 4, 3, 8);
+  const numberPoints = clamp(
+    opts.numberPoints ?? POINT_COUNT_DEFAULT,
+    POINT_COUNT_MIN,
+    POINT_COUNT_MAX,
+  );
   const waveAmplitude = clamp(opts.waveAmplitude ?? 30, 0, 100);
 
   return {
@@ -86,6 +93,7 @@ export default class WavePath {
   private static readonly ENV_POWER = 0.5;
   private static readonly RIPPLE_FREQ = 2;
   private static readonly RIPPLE_GAIN = 0.5;
+  private static readonly SECONDARY_RIPPLE_GAIN = 0.3;
 
   private static readonly LIFT_EASE_POW = 1.6;
   private static readonly BELL_SHAPE = 0.85;
@@ -285,7 +293,7 @@ export default class WavePath {
   }
 
   private static fmtY(n: number): string {
-    const v = Math.round(n * 10) / 10;
+    const v = Math.round(n * 100) / 100;
     const iv = v | 0;
     return v === iv ? String(iv) : String(v);
   }
@@ -303,11 +311,23 @@ export default class WavePath {
 
   private rollWaveProfile(): void {
     const phase = random01() * Math.PI * 2;
+    const secondaryPhase = random01() * Math.PI * 2;
     const n = this.pointCount;
     const FREQ = WavePath.RIPPLE_FREQ;
+    let maxAbs = 0;
 
     for (let i = 0; i < n; i++) {
-      this.baseWave[i] = Math.sin(this.tValues[i] * Math.PI * FREQ + phase) * this.envValues[i];
+      const angle = this.tValues[i] * Math.PI * FREQ;
+      const primary = Math.sin(angle + phase);
+      const secondary = Math.sin(angle * 2 + secondaryPhase) * WavePath.SECONDARY_RIPPLE_GAIN;
+      const value = (primary + secondary) * this.envValues[i];
+
+      this.baseWave[i] = value;
+      maxAbs = Math.max(maxAbs, Math.abs(value));
+    }
+
+    if (maxAbs > 1) {
+      for (let i = 0; i < n; i++) this.baseWave[i] /= maxAbs;
     }
   }
 
@@ -332,7 +352,8 @@ export default class WavePath {
     }
 
     if (Number.isFinite(limit)) {
-      rippleFactor = Math.min(rippleFactor, Math.max(0, limit * 0.98));
+      const safeLimit = Math.max(0, limit * 0.98);
+      rippleFactor = safeLimit === 0 ? 0 : safeLimit * Math.tanh(rippleFactor / safeLimit);
     }
 
     for (let i = 0; i < this.pointCount; i++) {
