@@ -58,7 +58,7 @@ import type { WavePathOptions } from 'wave-path';
 |:----------------|:-----------------------|:-----------|:------------|
 | `svgEl`         | `string \| SVGElement` | —          | **Required.** SVG container selector or element node. |
 | `pathEl`        | `string`               | `'path'`   | Selector for `<path>` elements inside the SVG. All matched paths are animated as layers. |
-| `numberPoints`  | `number`               | `4`        | Number of wave control points (clamped to **3..8**). Higher values give a more detailed edge. |
+| `numberPoints`  | `number`               | `4`        | Number of wave control points (clamped to **3..32**). Higher values give a more detailed edge. |
 | `waveAmplitude` | `number`               | `30`       | Wave ripple amplitude (clamped to **0..100**). Set `0` for a straight edge animation. |
 | `delayPaths`    | `number`               | `0.25`     | Delay between animations of each path layer (seconds). |
 | `duration`      | `number`               | `1`        | Duration of each path layer animation (seconds). |
