@@ -341,17 +341,23 @@ export default class WavePath {
     const maxUp = PERCENT_MAX - lift;
     const maxDown = lift - PERCENT_MIN;
 
-    let limit = Infinity;
+    let upperLimit = Infinity;
+    let lowerLimit = Infinity;
 
     for (let i = 0; i < this.pointCount; i++) {
       const b = this.baseWave[i];
       if (b === 0) continue;
 
-      const localLimit = b > 0 ? maxUp / b : maxDown / -b;
-      if (localLimit < limit) limit = localLimit;
+      if (b > 0) upperLimit = Math.min(upperLimit, maxUp / b);
+      else lowerLimit = Math.min(lowerLimit, maxDown / -b);
     }
 
+    let limit = Math.min(upperLimit, lowerLimit);
     if (Number.isFinite(limit)) {
+      // Smooth the handoff between bounds so the ripple velocity stays continuous.
+      // This soft minimum remains within both bounds and close to the original shape.
+      const otherLimit = Math.max(upperLimit, lowerLimit);
+      limit /= (1 + (limit / otherLimit) ** 8) ** (1 / 8);
       const safeLimit = Math.max(0, limit * 0.98);
       rippleFactor = safeLimit === 0 ? 0 : safeLimit * Math.tanh(rippleFactor / safeLimit);
     }
@@ -401,8 +407,14 @@ export default class WavePath {
     const total = this.durationSec + this.pathDelay * (this.pathCount - 1);
     const totalMs = total * 1000;
 
+    if (totalMs <= 0) {
+      const stableD = this.buildCubicPath(this.flatTopPoints, opened);
+      for (let i = 0; i < this.pathCount; i++) this.setPathD(i, stableD);
+      return;
+    }
+
     const token = ++this.animToken;
-    const start = performance.now();
+    let start: number | null = null;
 
     const renderAt = (globalP: number): void => {
       const tNow = clamp01(globalP) * total;
@@ -427,6 +439,8 @@ export default class WavePath {
       const tick = (now: number) => {
         if (token !== this.animToken) return;
 
+        // Use the frame clock so a delayed first callback cannot skip the start.
+        start ??= now;
         const elapsed = now - start;
         const p = elapsed / totalMs;
 

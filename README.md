@@ -9,6 +9,8 @@ A lightweight library for multi-layered SVG overlays with animated open/close tr
 
 ---
 
+## Features
+
 - Smooth cubic-bezier wave edges via animated SVG `d` attributes.
 - Multiple layered `<path>` elements with configurable delay between layers.
 - Typed arrays and reused string buffers for low-allocation rendering.
@@ -20,6 +22,8 @@ A lightweight library for multi-layered SVG overlays with animated open/close tr
 ```bash
 npm install wave-path
 ```
+
+---
 
 ## Quick Start
 
@@ -42,6 +46,8 @@ await wavePath.close();
 await wavePath.toggle();
 ```
 
+---
+
 ## API
 
 ```ts
@@ -51,6 +57,8 @@ import type { WavePathOptions } from 'wave-path';
 
 - `WavePath` — main class (default export).
 - `WavePathOptions` — constructor options type.
+
+---
 
 ## Options
 
@@ -63,6 +71,14 @@ import type { WavePathOptions } from 'wave-path';
 | `delayPaths`    | `number`               | `0.25`     | Delay between animations of each path layer (seconds). |
 | `duration`      | `number`               | `1`        | Duration of each path layer animation (seconds). |
 | `isOpened`      | `boolean`              | `false`    | Initial state. Use `open()`, `close()`, or `toggle()` at runtime. |
+
+Animation timing starts on the first rendered frame and uses elapsed time, so `duration` and
+`delayPaths` are independent of display refresh rate. Large ripples blend smoothly between the
+top and bottom bounds. On 60 Hz displays, fast full-screen transitions still have larger steps
+between frames than on 120/144 Hz displays; increasing `duration` reduces those steps.
+`numberPoints` controls the detail of the wave edge, not the animation frame rate.
+
+---
 
 ## Methods
 
@@ -84,6 +100,8 @@ wavePath.destroy();
 - `stopIfActive()` — stops the current animation if active. Useful for cancelling or resetting animations.
 - `destroy()` — cancels animations, clears references and caches; safe to call multiple times.
 - `isOpened` (getter) — current logical state of the overlay (`boolean`).
+
+---
 
 ## License
 
